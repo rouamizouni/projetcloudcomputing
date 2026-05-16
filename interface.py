@@ -743,4 +743,3 @@ if prompt := st.chat_input("Pose ta question…"):
 
             except Exception as e:
                 st.error(f"Erreur : {e}")
-```
