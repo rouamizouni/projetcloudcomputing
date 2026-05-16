@@ -9,7 +9,7 @@ from pymongo import MongoClient
 from datetime import datetime
 import json
 
-st.set_page_config(page_title="SmartStudy Tutor", page_icon=“🎓”, layout="centered")
+st.set_page_config(page_title="SmartStudy Tutor", page_icon="🎓", layout="centered")
 
 # — CONFIGURATION —
 
