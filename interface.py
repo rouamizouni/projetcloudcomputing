@@ -9,27 +9,27 @@ from pymongo import MongoClient
 from datetime import datetime
 import json
 
-st.set_page_config(page_title=“SmartStudy Tutor”, page_icon=“🎓”, layout=“centered”)
+st.set_page_config(page_title="SmartStudy Tutor", page_icon=“🎓”, layout="centered")
 
 # — CONFIGURATION —
 
-BUCKET_NAME = “pdf_bucket_project”
-PROJECT_ID = “projet-cloud-computing-493007”
-MONGO_URI = “mongodb+srv://projetcloud:projetcloud@geminirag.shbfocl.mongodb.net/?appName=GeminiRAG”
-MONGO_DB = “smartstudy”
-MONGO_COLLECTION = “chat_history”
+BUCKET_NAME = "pdf_bucket_project"
+PROJECT_ID = "projet-cloud-computing-493007"
+MONGO_URI = "mongodb+srv://projetcloud:projetcloud@geminirag.shbfocl.mongodb.net/?appName=GeminiRAG"
+MONGO_DB = "smartstudy"
+MONGO_COLLECTION = "chat_history"
 
-API_BASE_URL = “https://smartstudy-api-64317660927.europe-west1.run.app”
-API_ASK_URL = f”{API_BASE_URL}/ask”
-API_QUIZ_URL = f”{API_BASE_URL}/quiz”
+API_BASE_URL = "https://smartstudy-api-64317660927.europe-west1.run.app"
+API_ASK_URL = f"{API_BASE_URL}/ask"
+API_QUIZ_URL = f"{API_BASE_URL}/quiz"
 
 # — HELPERS —
 
 def get_storage_client():
 try:
-if “gcp_service_account” in st.secrets:
+if "gcp_service_account" in st.secrets:
 creds = service_account.Credentials.from_service_account_info(
-st.secrets[“gcp_service_account”]
+st.secrets["gcp_service_account"]
 )
 return storage.Client(project=PROJECT_ID, credentials=creds)
 except Exception:
@@ -49,29 +49,29 @@ database_name=MONGO_DB,
 
 def save_message(session_id: str, role: str, content: str):
 history = get_chat_history(session_id)
-if role == “user”:
+if role == "user":
 history.add_user_message(content)
 else:
 history.add_ai_message(content)
 
 def save_quiz_to_history(session_id: str, questions: list, answers: dict, score: int, total: int):
 pct = round(100 * score / total)
-user_msg = f”📝 **Quiz effectué** — {len(questions)} questions sur ce document.”
-lines = [f”## 🧠 Résultat du Quiz — {score}/{total} ({pct}%)\n”]
+user_msg = f" **Quiz effectué** — {len(questions)} questions sur ce document."
+lines = [f"## Résultat du Quiz — {score}/{total} ({pct}%)\n"]
 for i, q in enumerate(questions):
 user_answer = answers.get(i)
-correct = q[“correct_index”]
+correct = q["correct_index"]
 is_correct = user_answer == correct
-icon = “✅” if is_correct else “❌”
-lines.append(f”**{icon} Q{i+1}. {q[‘question’]}**”)
+icon = "✅" if is_correct else "❌"
+lines.append(f"**{icon} Q{i+1}. {q['question']}**")
 if user_answer is not None:
-lines.append(f”- Ta réponse : {chr(65 + user_answer)}. {q[‘options’][user_answer]}”)
+lines.append(f"- Ta réponse : {chr(65 + user_answer)}. {q[´options'][user_answer]}")
 if not is_correct and user_answer is not None:
-lines.append(f”- Bonne réponse : {chr(65 + correct)}. {q[‘options’][correct]}”)
-lines.append(f”- 💡 {q[‘explanation’]}\n”)
-ai_msg = “\n”.join(lines)
-save_message(session_id, “user”, user_msg)
-save_message(session_id, “assistant”, ai_msg)
+lines.append(f"- Bonne réponse : {chr(65 + correct)}. {q['options'][correct]}")
+lines.append(f"- 💡 {q[‘explanation’]}\n")
+ai_msg = "\n".join(lines)
+save_message(session_id, "user", user_msg)
+save_message(session_id, "assistant", ai_msg)
 load_past_sessions.clear()
 load_session_messages.clear()
 
@@ -84,12 +84,12 @@ sample = col.find_one()
 if sample is None:
 return []
 session_field = next(
-(f for f in [“SessionId”, “session_id”, “sessionId”] if f in sample), None
+(f for f in ["SessionId", "session_id", "sessionId"] if f in sample), None
 )
 if not session_field:
 return []
 sessions = col.aggregate([
-{”$group”: {
+{"$group”: {
 “_id”: f”${session_field}”,
 “last_updated”: {”$max”: “$_id”},
 “message_count”: {”$sum”: 1},
