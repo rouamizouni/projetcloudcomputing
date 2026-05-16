@@ -563,47 +563,31 @@ st.rerun()
 st.markdown("---")
 
 if st.session_state.quiz_data is None:
-    # Choix de difficulté + thème pour varier les questions
-    col_diff, col_theme = st.columns(2)
-    with col_diff:
-        difficulty = st.select_slider(
-            "Difficulté",
-            options=["Facile", "Moyen", "Difficile"],
-            value="Moyen",
-        )
-    with col_theme:
-        focus = st.text_input(
-            "Thème précis (optionnel)",
-            placeholder="ex : chapitre 3, les mitochondries…",
-        )
-
-    if st.button("Générer le quiz →", type="primary", use_container_width=True):
-        import random
-        with st.spinner("Génération du quiz…"):
-            try:
-                res = requests.post(
-                    API_QUIZ_URL,
-                    json={
-                        "question": focus or "",
-                        "filename": st.session_state.current_filename,
-                        "difficulty": difficulty,
-                        "seed": random.randint(1, 999999),  # force des questions différentes
-                    },
-                    timeout=120,
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    quiz_obj = data.get("quiz")
-                    if isinstance(quiz_obj, dict) and "questions" in quiz_obj:
-                        st.session_state.quiz_data = quiz_obj["questions"]
-                        st.rerun()
-                    else:
-                        st.error("Le quiz n'a pas pu être généré.")
-                        st.json(data)
+    import random
+    with st.spinner("Génération du quiz…"):
+        try:
+            res = requests.post(
+                API_QUIZ_URL,
+                json={
+                    "question": "",
+                    "filename": st.session_state.current_filename,
+                    "seed": random.randint(1, 999999),
+                },
+                timeout=120,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                quiz_obj = data.get("quiz")
+                if isinstance(quiz_obj, dict) and "questions" in quiz_obj:
+                    st.session_state.quiz_data = quiz_obj["questions"]
+                    st.rerun()
                 else:
-                    st.error(f"Erreur {res.status_code} : {res.text}")
-            except Exception as e:
-                st.error(f"Erreur : {e}")
+                    st.error("Le quiz n'a pas pu être généré.")
+                    st.json(data)
+            else:
+                st.error(f"Erreur {res.status_code} : {res.text}")
+        except Exception as e:
+            st.error(f"Erreur : {e}")
 
 if st.session_state.quiz_data:
     questions = st.session_state.quiz_data
