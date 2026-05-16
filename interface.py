@@ -3,278 +3,13 @@ from google.cloud import storage
 from google.oauth2 import service_account
 import time
 import requests
+import random
 from langchain_mongodb.chat_message_histories import MongoDBChatMessageHistory
 from pymongo import MongoClient
 from datetime import datetime
 import json
 
-st.set_page_config(
-page_title=“SmartStudy”,
-page_icon=“✦”,
-layout=“centered”,
-initial_sidebar_state=“expanded”,
-)
-
-# — CUSTOM CSS —
-
-st.markdown(”””
-
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500&display=swap');
-
-/* ── Base ── */
-html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
-}
-
-/* Background */
-.stApp {
-    background-color: #F7F5F2;
-}
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {
-    background-color: #1C1917 !important;
-    border-right: none;
-}
-[data-testid="stSidebar"] * {
-    color: #E8E4DF !important;
-}
-[data-testid="stSidebar"] .stMarkdown h4 {
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.7rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #78716C !important;
-    margin-bottom: 0.5rem;
-}
-[data-testid="stSidebar"] hr {
-    border-color: #292524 !important;
-}
-[data-testid="stSidebar"] .stRadio label {
-    font-size: 0.875rem;
-    color: #D6D0CA !important;
-}
-[data-testid="stSidebar"] .stRadio [data-testid="stMarkdownContainer"] p {
-    color: #D6D0CA !important;
-}
-
-/* Sidebar buttons */
-[data-testid="stSidebar"] .stButton button {
-    background-color: transparent !important;
-    border: 1px solid #292524 !important;
-    color: #A8A29E !important;
-    border-radius: 8px !important;
-    font-size: 0.8rem !important;
-    font-family: 'DM Sans', sans-serif !important;
-    text-align: left !important;
-    transition: all 0.2s ease !important;
-    padding: 0.5rem 0.75rem !important;
-    white-space: pre-wrap !important;
-    height: auto !important;
-    line-height: 1.4 !important;
-}
-[data-testid="stSidebar"] .stButton button:hover {
-    background-color: #292524 !important;
-    color: #E8E4DF !important;
-    border-color: #44403C !important;
-}
-
-/* New conversation button */
-[data-testid="stSidebar"] .stButton:first-of-type button {
-    background-color: #292524 !important;
-    color: #E8E4DF !important;
-    border-color: #44403C !important;
-    font-weight: 500 !important;
-}
-
-/* ── Main content ── */
-.block-container {
-    padding-top: 2.5rem !important;
-    padding-bottom: 2rem !important;
-    max-width: 740px !important;
-}
-
-/* ── Title ── */
-h1 {
-    font-family: 'Lora', serif !important;
-    font-weight: 500 !important;
-    font-size: 2rem !important;
-    color: #1C1917 !important;
-    letter-spacing: -0.02em !important;
-    margin-bottom: 0 !important;
-}
-h2, h3 {
-    font-family: 'Lora', serif !important;
-    font-weight: 500 !important;
-    color: #1C1917 !important;
-}
-
-/* Subtitle */
-.stMarkdown p {
-    color: #78716C;
-    font-size: 0.925rem;
-    line-height: 1.6;
-}
-
-/* ── Chat messages ── */
-[data-testid="stChatMessage"] {
-    background: transparent !important;
-    border: none !important;
-    padding: 0.75rem 0 !important;
-}
-[data-testid="stChatMessage"][data-testid*="user"] {
-    background: transparent !important;
-}
-
-/* User bubble */
-[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) .stMarkdown {
-    background: #FFFFFF;
-    border: 1px solid #E7E4E0;
-    border-radius: 18px 18px 4px 18px;
-    padding: 0.875rem 1.125rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-}
-
-/* Assistant bubble */
-[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) .stMarkdown {
-    background: #FFFFFF;
-    border: 1px solid #E7E4E0;
-    border-radius: 18px 18px 18px 4px;
-    padding: 0.875rem 1.125rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-}
-
-/* Avatar icons */
-[data-testid="chatAvatarIcon-user"] {
-    background: #1C1917 !important;
-    color: #F7F5F2 !important;
-}
-[data-testid="chatAvatarIcon-assistant"] {
-    background: #D4A853 !important;
-    color: #1C1917 !important;
-}
-
-/* ── Chat input ── */
-[data-testid="stChatInput"] {
-    border-radius: 24px !important;
-    border: 1.5px solid #D6D0CA !important;
-    background: #FFFFFF !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
-    transition: border-color 0.2s ease !important;
-}
-[data-testid="stChatInput"]:focus-within {
-    border-color: #1C1917 !important;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.1) !important;
-}
-[data-testid="stChatInput"] textarea {
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.9rem !important;
-    color: #1C1917 !important;
-}
-
-/* ── Buttons (main) ── */
-.stButton button {
-    border-radius: 10px !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-weight: 500 !important;
-    font-size: 0.875rem !important;
-    transition: all 0.2s ease !important;
-    border: 1.5px solid #D6D0CA !important;
-    background: #FFFFFF !important;
-    color: #1C1917 !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
-}
-.stButton button:hover {
-    background: #1C1917 !important;
-    color: #F7F5F2 !important;
-    border-color: #1C1917 !important;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
-}
-.stButton button[kind="primary"] {
-    background: #1C1917 !important;
-    color: #F7F5F2 !important;
-    border-color: #1C1917 !important;
-}
-.stButton button[kind="primary"]:hover {
-    background: #44403C !important;
-    border-color: #44403C !important;
-}
-
-/* ── File uploader ── */
-[data-testid="stFileUploader"] {
-    border: 1.5px dashed #D6D0CA !important;
-    border-radius: 14px !important;
-    background: #FFFFFF !important;
-    padding: 1rem !important;
-    transition: border-color 0.2s ease !important;
-}
-[data-testid="stFileUploader"]:hover {
-    border-color: #1C1917 !important;
-}
-
-/* ── Status box ── */
-[data-testid="stStatus"] {
-    border-radius: 12px !important;
-    border: 1px solid #E7E4E0 !important;
-    background: #FFFFFF !important;
-}
-
-/* ── Alerts & success ── */
-[data-testid="stAlert"] {
-    border-radius: 12px !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.875rem !important;
-}
-
-/* ── Progress bar ── */
-[data-testid="stProgress"] > div > div {
-    background: #1C1917 !important;
-    border-radius: 99px !important;
-}
-[data-testid="stProgress"] > div {
-    background: #E7E4E0 !important;
-    border-radius: 99px !important;
-}
-
-/* ── Divider ── */
-hr {
-    border-color: #E7E4E0 !important;
-    margin: 1.25rem 0 !important;
-}
-
-/* ── Info/warning/error boxes ── */
-.stInfo, .stSuccess, .stWarning, .stError {
-    border-radius: 10px !important;
-    font-size: 0.875rem !important;
-}
-
-/* ── Quiz container ── */
-[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] {
-    border-radius: 12px !important;
-}
-
-/* ── Caption ── */
-.stCaption, caption {
-    color: #A8A29E !important;
-    font-size: 0.78rem !important;
-}
-
-/* ── Spinner ── */
-[data-testid="stSpinner"] {
-    color: #78716C !important;
-}
-
-/* ── Radio ── */
-.stRadio label {
-    font-size: 0.875rem !important;
-}
-
-/* Hide streamlit branding */
-#MainMenu, footer, header {visibility: hidden;}
-</style>
-
-“””, unsafe_allow_html=True)
+st.set_page_config(page_title=“SmartStudy Tutor”, page_icon=“🎓”, layout=“centered”)
 
 # — CONFIGURATION —
 
@@ -409,7 +144,7 @@ if len(parts) == 2:
 filename = parts[0]
 try:
 ts = int(parts[1])
-date = datetime.fromtimestamp(ts).strftime(”%d %b, %H:%M”)
+date = datetime.fromtimestamp(ts).strftime(”%d/%m %H:%M”)
 return filename, date
 except ValueError:
 pass
@@ -435,34 +170,32 @@ st.session_state[key] = val
 # — SIDEBAR —
 
 with st.sidebar:
-st.markdown(”## ✦ SmartStudy”)
-st.markdown(”—”)
+st.title(“🎓 SmartStudy”)
 
 ```
 mode = st.radio(
-    "Mode",
+    "Mode du tuteur",
     options=["persona", "normal"],
-    format_func=lambda x: "Tuteur Personnalisé" if x == "persona" else "Mode Direct",
-    label_visibility="collapsed",
+    format_func=lambda x: "🎓 Tuteur Personna" if x == "persona" else "📝 Mode Normal",
 )
 
-st.markdown("---")
+st.divider()
 
-if st.button("＋  Nouvelle session", use_container_width=True):
+if st.button("✏️ Nouvelle conversation", use_container_width=True):
     for key in list(defaults.keys()):
         st.session_state[key] = defaults[key]
     st.rerun()
 
 if st.session_state.file_ready and not st.session_state.show_quiz:
-    if st.button("◎  Lancer un quiz", use_container_width=True):
+    if st.button("🧠 Lancer un quiz", use_container_width=True, type="primary"):
         st.session_state.show_quiz = True
         st.session_state.quiz_data = None
         st.session_state.quiz_answers = {}
         st.session_state.quiz_submitted = False
         st.rerun()
 
-st.markdown("---")
-st.markdown("#### Historique")
+st.divider()
+st.markdown("#### 🕐 Conversations récentes")
 
 if st.session_state.get("mongo_error"):
     st.error(f"MongoDB : {st.session_state.mongo_error}")
@@ -470,7 +203,7 @@ if st.session_state.get("mongo_error"):
 past_sessions = load_past_sessions()
 
 if not past_sessions:
-    st.caption("Aucune conversation pour l'instant.")
+    st.caption("Aucune conversation sauvegardee.")
 else:
     for s in past_sessions:
         sid = s["_id"]
@@ -478,7 +211,8 @@ else:
             continue
         filename, date = format_session_label(sid)
         is_active = sid == st.session_state.session_id
-        label = f"{'▸  ' if is_active else '    '}{filename}\n     {date}" if date else filename
+        prefix = "▶ " if is_active else ""
+        label = f"{prefix}📄 {filename}\n🕐 {date}" if date else f"{prefix}📄 {filename}"
 
         if st.button(label, key=f"sess_{sid}", use_container_width=True):
             msgs = load_session_messages(sid)
@@ -494,77 +228,67 @@ else:
             st.rerun()
 ```
 
-# ══════════════════════════════
+# — MAIN —
 
-# MAIN
-
-# ══════════════════════════════
+st.title(“🎓 SmartStudy Tutor”)
+st.markdown(”### Bienvenue dans ton espace d’apprentissage intelligent”)
 
 # — SECTION 1 : UPLOAD —
 
 if not st.session_state.file_ready:
-st.markdown(”# SmartStudy”)
-st.markdown(“Ton espace d’apprentissage intelligent. Charge un cours, pose tes questions, teste tes connaissances.”)
-st.markdown(”—”)
+st.write(“Telecharge ton cours en PDF pour commencer la session.”)
 
 ```
-uploaded_file = st.file_uploader(
-    "Dépose ton fichier PDF ici",
-    type="pdf",
-    label_visibility="collapsed",
-)
+with st.container():
+    uploaded_file = st.file_uploader("Choisis ton fichier PDF", type="pdf")
 
-if uploaded_file is not None:
-    st.markdown(f"**{uploaded_file.name}** · {round(uploaded_file.size / 1024)} Ko")
-    if st.button("Analyser le document →", type="primary"):
-        with st.status("Traitement en cours…", expanded=True) as status:
-            st.write("Envoi vers Google Cloud Storage…")
-            client = get_storage_client()
-            bucket = client.bucket(BUCKET_NAME)
-            blob = bucket.blob(uploaded_file.name)
-            blob.upload_from_file(uploaded_file)
-            st.session_state.current_filename = uploaded_file.name
-            st.write(f"Document reçu.")
+    if uploaded_file is not None:
+        if st.button("Lancer l'analyse du cours"):
+            with st.status("Traitement du document...", expanded=True) as status:
+                st.write("📤 Envoi du fichier vers Google Cloud Storage...")
+                client = get_storage_client()
+                bucket = client.bucket(BUCKET_NAME)
+                blob = bucket.blob(uploaded_file.name)
+                blob.upload_from_file(uploaded_file)
+                st.session_state.current_filename = uploaded_file.name
+                st.write(f"✅ Fichier `{uploaded_file.name}` envoye.")
 
-            st.write("Analyse et indexation…")
-            st.write("Environ 30 à 60 secondes.")
-            time.sleep(45)
+                st.write("🔍 Analyse et indexation du document en cours...")
+                st.write("(Cela peut prendre 30 a 60 secondes)")
+                time.sleep(45)
 
-            st.write("Prêt.")
-            status.update(label="Document prêt ✓", state="complete", expanded=False)
+                st.write("✅ Document indexe !")
+                status.update(label="Analyse terminee !", state="complete", expanded=False)
 
-        st.session_state.session_id = f"{uploaded_file.name}_{int(time.time())}"
-        st.session_state.file_ready = True
-        st.session_state.messages = []
-        load_past_sessions.clear()
-        st.balloons()
-        st.rerun()
+            st.session_state.session_id = f"{uploaded_file.name}_{int(time.time())}"
+            st.session_state.file_ready = True
+            st.session_state.messages = []
+            load_past_sessions.clear()
+            st.balloons()
+            st.rerun()
 ```
 
 # — SECTION 2A : QUIZ —
 
-elif st.session_state.file_ready and st.session_state.show_quiz:
-col_title, col_close = st.columns([6, 1])
-with col_title:
-st.markdown(”## Quiz”)
-st.caption(f”Document : {st.session_state.current_filename}”)
-with col_close:
-st.markdown(”<br>”, unsafe_allow_html=True)
-if st.button(“✕”, use_container_width=True):
-st.session_state.show_quiz = False
-st.session_state.quiz_data = None
-st.session_state.quiz_answers = {}
-st.session_state.quiz_submitted = False
-if “quiz_saved” in st.session_state:
-del st.session_state.quiz_saved
-st.rerun()
+if st.session_state.file_ready and st.session_state.show_quiz:
+st.divider()
 
 ```
-st.markdown("---")
+col_title, col_close = st.columns([5, 1])
+with col_title:
+    st.subheader("🧠 Quiz interactif")
+with col_close:
+    if st.button("✖ Fermer", use_container_width=True):
+        st.session_state.show_quiz = False
+        st.session_state.quiz_data = None
+        st.session_state.quiz_answers = {}
+        st.session_state.quiz_submitted = False
+        if "quiz_saved" in st.session_state:
+            del st.session_state.quiz_saved
+        st.rerun()
 
 if st.session_state.quiz_data is None:
-    import random
-    with st.spinner("Génération du quiz…"):
+    with st.spinner("🎓 Le mentor prepare ton quiz..."):
         try:
             res = requests.post(
                 API_QUIZ_URL,
@@ -582,46 +306,40 @@ if st.session_state.quiz_data is None:
                     st.session_state.quiz_data = quiz_obj["questions"]
                     st.rerun()
                 else:
-                    st.error("Le quiz n'a pas pu être généré.")
+                    st.error("Le quiz n'a pas pu etre genere correctement.")
                     st.json(data)
             else:
                 st.error(f"Erreur {res.status_code} : {res.text}")
         except Exception as e:
-            st.error(f"Erreur : {e}")
+            st.error(f"Erreur de connexion : {e}")
 
 if st.session_state.quiz_data:
     questions = st.session_state.quiz_data
 
     if not st.session_state.quiz_submitted:
-        st.info(f"{len(questions)} questions — réponds à chacune puis soumets.")
+        st.info(f"📋 **{len(questions)} questions** — Choisis une reponse pour chacune, puis soumets.")
 
         for i, q in enumerate(questions):
             with st.container(border=True):
-                st.markdown(f"**{i+1}.** {q['question']}")
+                st.markdown(f"**Question {i+1}.** {q['question']}")
                 choice = st.radio(
-                    "",
+                    "Ta reponse :",
                     options=list(range(len(q["options"]))),
                     format_func=lambda x, opts=q["options"]: f"{chr(65+x)}. {opts[x]}",
                     key=f"quiz_q_{i}",
                     index=None,
-                    label_visibility="collapsed",
                 )
                 if choice is not None:
                     st.session_state.quiz_answers[i] = choice
 
         all_answered = len(st.session_state.quiz_answers) == len(questions)
-
-        if not all_answered:
-            st.caption(f"{len(st.session_state.quiz_answers)}/{len(questions)} réponses")
-
-        if st.button(
-            "Soumettre →" if all_answered else f"Répondre à toutes les questions ({len(st.session_state.quiz_answers)}/{len(questions)})",
-            disabled=not all_answered,
-            use_container_width=True,
-            type="primary",
-        ):
+        if st.button("Soumettre mes reponses", disabled=not all_answered,
+                     use_container_width=True, type="primary"):
             st.session_state.quiz_submitted = True
             st.rerun()
+
+        if not all_answered:
+            st.caption(f"Reponses donnees : {len(st.session_state.quiz_answers)}/{len(questions)}")
 
     else:
         score = sum(
@@ -632,14 +350,18 @@ if st.session_state.quiz_data:
         pct = round(100 * score / total)
 
         if pct >= 80:
-            st.success(f"**{score}/{total}** — Excellent travail.")
+            st.success(f"🏆 Excellent ! Score : **{score}/{total}** ({pct}%)")
+            feedback = "Tu maitrises bien ce chapitre. Continue comme ca !"
         elif pct >= 50:
-            st.warning(f"**{score}/{total}** — Quelques points à revoir.")
+            st.warning(f"👍 Pas mal ! Score : **{score}/{total}** ({pct}%)")
+            feedback = "Quelques notions a revoir. Regarde bien les explications ci-dessous."
         else:
-            st.error(f"**{score}/{total}** — À retravailler, mais tu y arriveras.")
+            st.error(f"📚 A retravailler. Score : **{score}/{total}** ({pct}%)")
+            feedback = "Pas de panique, c'est en se trompant qu'on apprend ! Lis bien les corrections."
 
+        st.markdown(f"_{feedback}_")
         st.progress(pct / 100)
-        st.markdown("---")
+        st.divider()
 
         for i, q in enumerate(questions):
             user_answer = st.session_state.quiz_answers.get(i)
@@ -647,18 +369,20 @@ if st.session_state.quiz_data:
             is_correct = user_answer == correct
 
             with st.container(border=True):
-                st.markdown(f"{'✓' if is_correct else '✗'}  **Q{i+1}. {q['question']}**")
+                icon = "✅" if is_correct else "❌"
+                st.markdown(f"### {icon} Question {i+1}")
+                st.markdown(f"**{q['question']}**")
 
                 for j, opt in enumerate(q["options"]):
                     prefix = chr(65 + j)
                     if j == correct:
-                        st.markdown(f"→ **{prefix}. {opt}** *(bonne réponse)*")
+                        st.markdown(f"- **{prefix}. {opt}**  _(bonne reponse)_")
                     elif j == user_answer and not is_correct:
-                        st.markdown(f"✗ {prefix}. {opt} *(ta réponse)*")
+                        st.markdown(f"- {prefix}. {opt}  _(ta reponse)_")
                     else:
-                        st.markdown(f"  {prefix}. {opt}")
+                        st.markdown(f"- {prefix}. {opt}")
 
-                st.caption(f"💡 {q['explanation']}")
+                st.info(f"💡 **Explication :** {q['explanation']}")
                 if q.get("source"):
                     st.caption(f"Source : {q['source']}")
 
@@ -672,14 +396,14 @@ if st.session_state.quiz_data:
                     total,
                 )
                 st.session_state.quiz_saved = True
-                st.toast("Quiz sauvegardé ✓")
+                st.toast("✅ Quiz sauvegarde dans ton historique !", icon="💾")
             except Exception as e:
-                st.warning(f"Quiz non sauvegardé : {e}")
+                st.warning(f"Quiz non sauvegarde : {e}")
 
-        st.markdown("---")
+        st.divider()
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Refaire un quiz", use_container_width=True):
+            if st.button("🔄 Refaire un nouveau quiz", use_container_width=True):
                 st.session_state.quiz_data = None
                 st.session_state.quiz_answers = {}
                 st.session_state.quiz_submitted = False
@@ -687,7 +411,7 @@ if st.session_state.quiz_data:
                     del st.session_state.quiz_saved
                 st.rerun()
         with col2:
-            if st.button("Retour au chat →", use_container_width=True, type="primary"):
+            if st.button("💬 Retour au chat", use_container_width=True):
                 st.session_state.show_quiz = False
                 if "quiz_saved" in st.session_state:
                     del st.session_state.quiz_saved
@@ -697,17 +421,19 @@ if st.session_state.quiz_data:
 # — SECTION 2B : CHAT —
 
 elif st.session_state.file_ready:
-st.markdown(f”### {st.session_state.current_filename}”)
-mode_label = “Tuteur personnalisé” if mode == “persona” else “Mode direct”
-st.caption(f”{mode_label}  ·  Utilise la sidebar pour lancer un quiz”)
-st.markdown(”—”)
+st.success(f”**Document actif :** `{st.session_state.current_filename}`”)
+st.divider()
 
 ```
+mode_label = "🎓 Mentor" if mode == "persona" else "📝 Direct"
+st.subheader(f"Pose tes questions — Mode {mode_label}")
+st.caption("Astuce : utilise le bouton **🧠 Lancer un quiz** dans la sidebar pour te tester.")
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if prompt := st.chat_input("Pose ta question…"):
+if prompt := st.chat_input("Ex: Resume les points cles pour moi"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -719,13 +445,13 @@ if prompt := st.chat_input("Pose ta question…"):
     }
 
     with st.chat_message("assistant"):
-        with st.spinner(""):
+        with st.spinner("Je reflechis..."):
             try:
                 res = requests.post(API_ASK_URL, json=body, timeout=120)
 
                 if res.status_code == 200:
                     data = res.json()
-                    reponse_ia = data.get("answer", "Aucune réponse reçue.")
+                    reponse_ia = data.get("answer", "Aucune reponse recue.")
                     st.markdown(reponse_ia)
                     st.session_state.messages.append(
                         {"role": "assistant", "content": reponse_ia}
@@ -737,9 +463,10 @@ if prompt := st.chat_input("Pose ta question…"):
                             load_past_sessions.clear()
                             load_session_messages.clear()
                         except Exception as e:
-                            st.warning(f"Non sauvegardé : {e}")
+                            st.warning(f"Non sauvegarde : {e}")
                 else:
                     st.error(f"Erreur {res.status_code} : {res.text}")
 
             except Exception as e:
-                st.error(f"Erreur : {e}")
+                st.error(f"Erreur de connexion : {e}")
+```
