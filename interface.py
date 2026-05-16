@@ -469,4 +469,3 @@ if prompt := st.chat_input("Ex: Resume les points cles pour moi"):
 
             except Exception as e:
                 st.error(f"Erreur de connexion : {e}")
-```
