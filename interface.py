@@ -6,6 +6,7 @@ import requests
 from langchain_mongodb.chat_message_histories import MongoDBChatMessageHistory
 from pymongo import MongoClient
 from datetime import datetime
+import json
 
 st.set_page_config(page_title="SmartStudy Tutor", page_icon="🎓", layout="centered")
 
@@ -34,6 +35,10 @@ def get_storage_client():
     return storage.Client(project=PROJECT_ID)
 
 
+def get_mongo_client():
+    return MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+
+
 def get_chat_history(session_id: str) -> MongoDBChatMessageHistory:
     return MongoDBChatMessageHistory(
         session_id=session_id,
@@ -43,15 +48,62 @@ def get_chat_history(session_id: str) -> MongoDBChatMessageHistory:
     )
 
 
+def save_message(session_id: str, role: str, content: str):
+    """Sauvegarde un message dans MongoDB."""
+    history = get_chat_history(session_id)
+    if role == "user":
+        history.add_user_message(content)
+    else:
+        history.add_ai_message(content)
+
+
+def save_quiz_to_history(session_id: str, questions: list, answers: dict, score: int, total: int):
+    """Sauvegarde le résultat du quiz dans MongoDB."""
+    pct = round(100 * score / total)
+    user_msg = f"📝 **Quiz effectué** — {len(questions)} questions sur ce document."
+    lines = [f"## 🧠 Résultat du Quiz — {score}/{total} ({pct}%)\n"]
+    for i, q in enumerate(questions):
+        user_answer = answers.get(i)
+        correct = q["correct_index"]
+        is_correct = user_answer == correct
+        icon = "✅" if is_correct else "❌"
+        lines.append(f"**{icon} Q{i+1}. {q['question']}**")
+        if user_answer is not None:
+            lines.append(f"- Ta réponse : {chr(65 + user_answer)}. {q['options'][user_answer]}")
+        if not is_correct and user_answer is not None:
+            lines.append(f"- Bonne réponse : {chr(65 + correct)}. {q['options'][correct]}")
+        lines.append(f"- 💡 {q['explanation']}\n")
+    ai_msg = "\n".join(lines)
+    save_message(session_id, "user", user_msg)
+    save_message(session_id, "assistant", ai_msg)
+    load_past_sessions.clear()
+    load_session_messages.clear()
+
+
 @st.cache_data(ttl=30)
 def load_past_sessions():
-    """Fetch all past sessions from MongoDB, sorted by most recent."""
+    """Récupère toutes les sessions depuis MongoDB."""
     try:
-        client = MongoClient(MONGO_URI)
+        client = get_mongo_client()
         col = client[MONGO_DB][MONGO_COLLECTION]
+        # On teste d'abord quels champs existent dans la collection
+        sample = col.find_one()
+        if sample is None:
+            return []
+
+        # Détermine le nom du champ SessionId (peut varier selon la version langchain)
+        session_field = None
+        for field in ["SessionId", "session_id", "sessionId"]:
+            if field in sample:
+                session_field = field
+                break
+
+        if session_field is None:
+            return []
+
         sessions = col.aggregate([
             {"$group": {
-                "_id": "$SessionId",
+                "_id": f"${session_field}",
                 "last_updated": {"$max": "$_id"},
                 "message_count": {"$sum": 1},
             }},
@@ -59,35 +111,64 @@ def load_past_sessions():
             {"$limit": 30},
         ])
         return list(sessions)
-    except Exception:
+    except Exception as e:
+        st.session_state["mongo_error"] = str(e)
         return []
 
 
 @st.cache_data(ttl=60)
 def load_session_messages(session_id: str):
-    """Load messages from a past session and return as list of dicts."""
+    """Charge les messages d'une session depuis MongoDB."""
     try:
-        client = MongoClient(MONGO_URI)
+        client = get_mongo_client()
         col = client[MONGO_DB][MONGO_COLLECTION]
-        # Each document in the collection is one message
-        docs = list(col.find({"SessionId": session_id}).sort("_id", 1))
+
+        # Détermine le nom du champ SessionId
+        sample = col.find_one()
+        if sample is None:
+            return []
+
+        session_field = None
+        for field in ["SessionId", "session_id", "sessionId"]:
+            if field in sample:
+                session_field = field
+                break
+
+        if session_field is None:
+            return []
+
+        docs = list(col.find({session_field: session_id}).sort("_id", 1))
         messages = []
+
         for doc in docs:
-            # langchain_mongodb stores messages inside a "History" field as JSON
-            history_data = doc.get("History", {})
-            msg_type = history_data.get("type", "")
-            content = history_data.get("data", {}).get("content", "")
+            # langchain_mongodb peut stocker les messages dans "History" ou "history"
+            history_raw = doc.get("History") or doc.get("history", {})
+            if isinstance(history_raw, str):
+                try:
+                    history_raw = json.loads(history_raw)
+                except Exception:
+                    continue
+
+            msg_type = history_raw.get("type", "")
+            data = history_raw.get("data", {})
+            content = data.get("content", "") if data else history_raw.get("content", "")
+
+            if not content:
+                continue
+
             if msg_type == "human":
                 messages.append({"role": "user", "content": content})
             elif msg_type == "ai":
                 messages.append({"role": "assistant", "content": content})
+
         return messages
-    except Exception:
+    except Exception as e:
+        st.session_state["mongo_error"] = str(e)
         return []
 
 
 def format_session_label(session_id: str):
-    """Turn 'cours.pdf_1716800000' into (filename, date)."""
+    """Transforme 'cours.pdf_1716800000' en (filename, date)."""
     parts = session_id.rsplit("_", 1)
     if len(parts) == 2:
         filename = parts[0]
@@ -110,6 +191,7 @@ defaults = {
     "quiz_answers": {},
     "quiz_submitted": False,
     "show_quiz": False,
+    "mongo_error": None,
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -129,14 +211,8 @@ with st.sidebar:
     st.divider()
 
     if st.button("✏️ Nouvelle conversation", use_container_width=True):
-        st.session_state.file_ready = False
-        st.session_state.messages = []
-        st.session_state.current_filename = None
-        st.session_state.session_id = None
-        st.session_state.quiz_data = None
-        st.session_state.quiz_answers = {}
-        st.session_state.quiz_submitted = False
-        st.session_state.show_quiz = False
+        for key in list(defaults.keys()):
+            st.session_state[key] = defaults[key]
         st.rerun()
 
     if st.session_state.file_ready and not st.session_state.show_quiz:
@@ -150,6 +226,10 @@ with st.sidebar:
     st.divider()
     st.markdown("#### 🕐 Conversations récentes")
 
+    # Affiche l'erreur MongoDB si présente
+    if st.session_state.mongo_error:
+        st.error(f"❌ MongoDB : {st.session_state.mongo_error}")
+
     past_sessions = load_past_sessions()
 
     if not past_sessions:
@@ -157,6 +237,8 @@ with st.sidebar:
     else:
         for s in past_sessions:
             sid = s["_id"]
+            if not sid:
+                continue
             filename, date = format_session_label(sid)
             is_active = sid == st.session_state.session_id
             prefix = "▶ " if is_active else ""
@@ -170,6 +252,9 @@ with st.sidebar:
                 st.session_state.current_filename = parts[0] if len(parts) == 2 else sid
                 st.session_state.file_ready = True
                 st.session_state.show_quiz = False
+                st.session_state.quiz_data = None
+                st.session_state.quiz_answers = {}
+                st.session_state.quiz_submitted = False
                 st.rerun()
 
 
@@ -206,7 +291,6 @@ if not st.session_state.file_ready:
                 st.session_state.session_id = f"{uploaded_file.name}_{int(time.time())}"
                 st.session_state.file_ready = True
                 st.session_state.messages = []
-                # Invalide le cache pour que la nouvelle session apparaisse
                 load_past_sessions.clear()
                 st.balloons()
                 st.rerun()
@@ -225,6 +309,8 @@ if st.session_state.file_ready and st.session_state.show_quiz:
             st.session_state.quiz_data = None
             st.session_state.quiz_answers = {}
             st.session_state.quiz_submitted = False
+            if "quiz_saved" in st.session_state:
+                del st.session_state.quiz_saved
             st.rerun()
 
     if st.session_state.quiz_data is None:
@@ -322,6 +408,21 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                     if q.get("source"):
                         st.caption(f"Source : {q['source']}")
 
+            # Sauvegarde du quiz dans MongoDB (une seule fois)
+            if st.session_state.session_id and "quiz_saved" not in st.session_state:
+                try:
+                    save_quiz_to_history(
+                        st.session_state.session_id,
+                        questions,
+                        st.session_state.quiz_answers,
+                        score,
+                        total,
+                    )
+                    st.session_state.quiz_saved = True
+                    st.toast("✅ Quiz sauvegardé dans ton historique !", icon="💾")
+                except Exception as e:
+                    st.warning(f"Quiz non sauvegardé : {e}")
+
             st.divider()
             col1, col2 = st.columns(2)
             with col1:
@@ -329,10 +430,14 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                     st.session_state.quiz_data = None
                     st.session_state.quiz_answers = {}
                     st.session_state.quiz_submitted = False
+                    if "quiz_saved" in st.session_state:
+                        del st.session_state.quiz_saved
                     st.rerun()
             with col2:
                 if st.button("💬 Retour au chat", use_container_width=True):
                     st.session_state.show_quiz = False
+                    if "quiz_saved" in st.session_state:
+                        del st.session_state.quiz_saved
                     st.rerun()
 
 
@@ -373,14 +478,14 @@ elif st.session_state.file_ready:
                             {"role": "assistant", "content": reponse_ia}
                         )
 
-                        # Sauvegarde dans MongoDB
                         if st.session_state.session_id:
-                            history = get_chat_history(st.session_state.session_id)
-                            history.add_user_message(prompt)
-                            history.add_ai_message(reponse_ia)
-                            # Invalide le cache pour que la sidebar se mette à jour
-                            load_past_sessions.clear()
-                            load_session_messages.clear()
+                            try:
+                                save_message(st.session_state.session_id, "user", prompt)
+                                save_message(st.session_state.session_id, "assistant", reponse_ia)
+                                load_past_sessions.clear()
+                                load_session_messages.clear()
+                            except Exception as e:
+                                st.warning(f"⚠️ Message non sauvegardé : {e}")
 
                     else:
                         st.error(f"Erreur {res.status_code} : {res.text}")
