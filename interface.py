@@ -802,15 +802,15 @@ if st.session_state.file_ready and st.session_state.show_quiz:
     if st.session_state.quiz_data is None:
         with st.spinner("🎓 The AI Mentor is organizing a dynamic evaluation block for you..."):
             try:
-                # FIXED: Attached dynamic parameters to fully bust structural proxies and inner microservice caches
+                # FIXED: Stripped the blank string "question" parameter key to prevent backend fallback logic
+                quiz_payload = {
+                    "filename": st.session_state.current_filename,
+                    "seed": random.randint(1, 999999),
+                    "timestamp": int(time.time())
+                }
                 res = requests.post(
                     API_QUIZ_URL,
-                    json={
-                        "question": "",
-                        "filename": st.session_state.current_filename,
-                        "seed": random.randint(1, 999999),
-                        "timestamp": int(time.time())
-                    },
+                    json=quiz_payload,
                     timeout=120,
                 )
                 if res.status_code == 200:
