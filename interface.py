@@ -28,13 +28,13 @@ MONGO_COLLECTION = "chat_history"
 USERS_COLLECTION = "users"
 RESET_COLLECTION = "password_resets"
 
-API_BASE_URL = "[https://smartstudy-api-64317660927.europe-west1.run.app](https://smartstudy-api-64317660927.europe-west1.run.app)"
+API_BASE_URL = "https://smartstudy-api-64317660927.europe-west1.run.app"
 API_ASK_URL = f"{API_BASE_URL}/ask"
 API_QUIZ_URL = f"{API_BASE_URL}/quiz"
 
-GOOGLE_AUTH_URL = "[https://accounts.google.com/o/oauth2/v2/auth](https://accounts.google.com/o/oauth2/v2/auth)"
-GOOGLE_TOKEN_URL = "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)"
-GOOGLE_USERINFO_URL = "[https://www.googleapis.com/oauth2/v3/userinfo](https://www.googleapis.com/oauth2/v3/userinfo)"
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 # ══════════════════════════════════════════
 # VALIDATION
@@ -206,7 +206,6 @@ def upsert_google_user(google_id: str, email: str, username: str, picture: str =
                 {"email": email.lower().strip()},
                 {"$set": {"google_id": google_id, "picture": picture}}
             )
-            return col.find_one({"email": email.lower().strip()})
         else:
             col.insert_one({
                 "email": email.lower().strip(),
@@ -216,7 +215,7 @@ def upsert_google_user(google_id: str, email: str, username: str, picture: str =
                 "created_at": datetime.utcnow(),
                 "auth_method": "google",
             })
-            return col.find_one({"google_id": google_id})
+        return col.find_one({"google_id": google_id})
     else:
         col.update_one({"google_id": google_id}, {"$set": {"picture": picture}})
         return col.find_one({"google_id": google_id})
@@ -253,4 +252,111 @@ def exchange_google_code(code: str) -> dict:
     })
     if token_res.status_code != 200:
         return None
-    access_token
+    access_token = token_res.json().get("access_token")
+    user_res = requests.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+    if user_res.status_code != 200:
+        return None
+    return user_res.json()
+
+def get_app_url() -> str:
+    try:
+        return st.secrets["google_oauth"]["redirect_uri"]
+    except Exception:
+        return "http://localhost:8501"
+
+# ══════════════════════════════════════════
+# APP HELPERS
+# ══════════════════════════════════════════
+
+def get_storage_client():
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds = service_account.Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"]
+            )
+            return storage.Client(project=PROJECT_ID, credentials=creds)
+    except Exception:
+        pass
+    return storage.Client(project=PROJECT_ID)
+
+def get_chat_history(session_id: str) -> MongoDBChatMessageHistory:
+    return MongoDBChatMessageHistory(
+        session_id=session_id,
+        connection_string=MONGO_URI,
+        collection_name=MONGO_COLLECTION,
+        database_name=MONGO_DB,
+    )
+
+def save_message(session_id: str, role: str, content: str):
+    history = get_chat_history(session_id)
+    if role == "user":
+        history.add_user_message(content)
+    else:
+        history.add_ai_message(content)
+
+def save_quiz_to_history(session_id: str, questions: list, answers: dict, score: int, total: int):
+    pct = round(100 * score / total)
+    user_msg = f"📝 **Quiz completed** — {len(questions)} questions on this document."
+    lines = [f"## 🧠 Quiz Result — {score}/{total} ({pct}%)\n"]
+    for i, q in enumerate(questions):
+        user_answer = answers.get(i)
+        correct = q["correct_index"]
+        is_correct = user_answer == correct
+        icon = "✅" if is_correct else "❌"
+        lines.append(f"**{icon} Q{i+1}. {q['question']}**")
+        if user_answer is not None:
+            lines.append(f"- Your answer: {chr(65 + user_answer)}. {q['options'][user_answer]}")
+        if not is_correct and user_answer is not None:
+            lines.append(f"- Correct answer: {chr(65 + correct)}. {q['options'][correct]}")
+        lines.append(f"- 💡 {q['explanation']}\n")
+    ai_msg = "\n".join(lines)
+    save_message(session_id, "user", user_msg)
+    save_message(session_id, "assistant", ai_msg)
+    load_past_sessions.clear()
+    load_session_messages.clear()
+
+@st.cache_data(ttl=30)
+def load_past_sessions(user_id: str):
+    try:
+        client = get_mongo_client()
+        col = client[MONGO_DB][MONGO_COLLECTION]
+        sample = col.find_one()
+        if sample is None:
+            return []
+        session_field = next(
+            (f for f in ["SessionId", "session_id", "sessionId"] if f in sample), None
+        )
+        if not session_field:
+            return []
+        sessions = col.aggregate([
+            {"$match": {session_field: {"$regex": f"^{user_id}__"}}},
+            {"$group": {
+                "_id": f"${session_field}",
+                "last_updated": {"$max": "$_id"},
+                "message_count": {"$sum": 1},
+            }},
+            {"$sort": {"last_updated": -1}},
+            {"$limit": 30},
+        ])
+        return list(sessions)
+    except Exception as e:
+        st.session_state["mongo_error"] = str(e)
+        return []
+
+@st.cache_data(ttl=60)
+def load_session_messages(session_id: str):
+    try:
+        client = get_mongo_client()
+        col = client[MONGO_DB][MONGO_COLLECTION]
+        sample = col.find_one()
+        if sample is None:
+            return []
+        session_field = next(
+            (f for f in ["SessionId", "session_id", "sessionId"] if f in sample), None
+        )
+        if not session_field:
+            return []
+        docs = list(col.find({session_field: session_id}).sort("_id", 1))
+        messages = []
+        for doc in docs:
+            history_raw = doc.get("History") or
