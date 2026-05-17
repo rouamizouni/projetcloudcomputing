@@ -17,7 +17,7 @@ import streamlit as st
 
 st.set_page_config(page_title="SmartStudy Tutor", page_icon="🎓", layout="centered")
 
-# — CONFIGURATION —
+# - CONFIGURATION -
 
 BUCKET_NAME = "pdf_bucket_project"
 PROJECT_ID = "projet-cloud-computing-493007"
@@ -32,9 +32,7 @@ API_ASK_URL = f"{API_BASE_URL}/ask"
 API_QUIZ_URL = f"{API_BASE_URL}/quiz"
 
 # ══════════════════════════════════════════
-
 # VALIDATION
-
 # ══════════════════════════════════════════
 
 
@@ -74,9 +72,7 @@ def password_strength_bar(password: str):
 
 
 # ══════════════════════════════════════════
-
 # EMAIL
-
 # ══════════════════════════════════════════
 
 
@@ -124,9 +120,7 @@ def send_reset_email(to_email: str, reset_link: str) -> bool:
 
 
 # ══════════════════════════════════════════
-
 # AUTH HELPERS
-
 # ══════════════════════════════════════════
 
 
@@ -227,9 +221,7 @@ def get_app_url() -> str:
 
 
 # ══════════════════════════════════════════
-
 # APP HELPERS
-
 # ══════════════════════════════════════════
 
 
@@ -392,9 +384,7 @@ def get_filename_from_session(session_id: str) -> str:
 
 
 # ══════════════════════════════════════════
-
 # STATE INITIALIZATION
-
 # ══════════════════════════════════════════
 
 auth_defaults = {
@@ -425,9 +415,7 @@ def reset_app_state():
 
 
 # ══════════════════════════════════════════
-
 # HANDLE RESET PASSWORD FROM URL
-
 # ══════════════════════════════════════════
 
 query_params = st.query_params
@@ -480,9 +468,7 @@ if "reset_token" in query_params and not st.session_state.authenticated:
     st.stop()
 
 # ══════════════════════════════════════════
-
 # AUTH PAGE
-
 # ══════════════════════════════════════════
 
 
@@ -616,10 +602,19 @@ if not st.session_state.authenticated:
     show_auth_page()
     st.stop()
 
+if st.session_state.authenticated and not st.session_state.file_ready and not st.session_state.is_guest:
+    past_sessions = load_past_sessions(st.session_state.user_id)
+    if past_sessions:
+        latest_session = past_sessions[0]
+        sid = latest_session["_id"]
+        if sid:
+            st.session_state.session_id = sid
+            st.session_state.current_filename = get_filename_from_session(sid)
+            st.session_state.file_ready = True
+            st.session_state.messages = load_session_messages(sid)
+
 # ══════════════════════════════════════════
-
 # MAIN APP
-
 # ══════════════════════════════════════════
 
 with st.sidebar:
@@ -641,7 +636,16 @@ with st.sidebar:
     st.divider()
 
     if st.button("✏️ New conversation", use_container_width=True):
-        reset_app_state()
+        st.session_state.messages = []
+        st.session_state.quiz_data = None
+        st.session_state.quiz_answers = {}
+        st.session_state.quiz_submitted = False
+        st.session_state.show_quiz = False
+
+        if st.session_state.current_filename and st.session_state.user_id:
+            st.session_state.session_id = make_session_id(
+                st.session_state.user_id, st.session_state.current_filename
+            ) 
         st.rerun()
 
     if st.session_state.file_ready and not st.session_state.show_quiz:
@@ -701,12 +705,12 @@ with st.sidebar:
             st.session_state[key] = {**auth_defaults, **app_defaults}[key]
         st.rerun()
 
-# — MAIN —
+# - MAIN -
 
 st.title("🎓 SmartStudy Tutor")
 st.markdown("### Welcome to your intelligent learning space")
 
-# — SECTION 1: UPLOAD —
+# - SECTION 1: UPLOAD -
 
 if not st.session_state.file_ready:
     st.write("Upload your course PDF to start the session.")
@@ -741,7 +745,7 @@ if not st.session_state.file_ready:
                 st.balloons()
                 st.rerun()
 
-# — SECTION 2A: QUIZ —
+# - SECTION 2A: QUIZ -
 
 if st.session_state.file_ready and st.session_state.show_quiz:
     st.divider()
@@ -901,7 +905,7 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                         del st.session_state.quiz_saved
                     st.rerun()
 
-# — SECTION 2B: CHAT —
+# - SECTION 2B: CHAT -
 
 elif st.session_state.file_ready:
     st.success(f"**Active document:** `{st.session_state.current_filename}`")
