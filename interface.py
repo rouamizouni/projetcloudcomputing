@@ -222,3 +222,35 @@ def upsert_google_user(google_id: str, email: str, username: str, picture: str =
         return col.find_one({"google_id": google_id})
 
 def get_google_auth_url() -> str:
+    try:
+        client_id = st.secrets["google_oauth"]["client_id"]
+        redirect_uri = st.secrets["google_oauth"]["redirect_uri"]
+    except Exception:
+        return None
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+
+def exchange_google_code(code: str) -> dict:
+    try:
+        client_id = st.secrets["google_oauth"]["client_id"]
+        client_secret = st.secrets["google_oauth"]["client_secret"]
+        redirect_uri = st.secrets["google_oauth"]["redirect_uri"]
+    except Exception:
+        return None
+    token_res = requests.post(GOOGLE_TOKEN_URL, data={
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    })
+    if token_res.status_code != 200:
+        return None
+    access_token
