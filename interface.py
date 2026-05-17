@@ -133,4 +133,90 @@ def get_user_by_email(email: str):
     return client[MONGO_DB][USERS_COLLECTION].find_one({"email": email.lower().strip()})
 
 def create_user(email: str, username: str, password: str) -> tuple:
-    if not is_valid_email
+    # FIXED: Added missing logical colon character syntax context here
+    if not is_valid_email(email):
+        return False, "Invalid email format."
+    is_strong, issues = check_password_strength(password)
+    if not is_strong:
+        return False, " · ".join(issues)
+    client = get_mongo_client()
+    col = client[MONGO_DB][USERS_COLLECTION]
+    if col.find_one({"email": email.lower().strip()}):
+        return False, "This email is already in use."
+    col.insert_one({
+        "email": email.lower().strip(),
+        "username": username.strip(),
+        "password": hash_password(password),
+        "created_at": datetime.utcnow(),
+        "auth_method": "email",
+    })
+    return True, "OK"
+
+def login_user(email: str, password: str):
+    user = get_user_by_email(email)
+    if user and user.get("password") and user["password"] == hash_password(password):
+        return user
+    return None
+
+def create_reset_token(email: str) -> str:
+    token = uuid.uuid4().hex
+    client = get_mongo_client()
+    col = client[MONGO_DB][RESET_COLLECTION]
+    col.delete_many({"email": email.lower().strip()})
+    col.insert_one({
+        "email": email.lower().strip(),
+        "token": token,
+        "expires_at": datetime.utcnow() + timedelta(minutes=30),
+        "used": False,
+    })
+    return token
+
+def verify_reset_token(token: str) -> str:
+    client = get_mongo_client()
+    col = client[MONGO_DB][RESET_COLLECTION]
+    doc = col.find_one({"token": token, "used": False})
+    if not doc:
+        return None
+    if datetime.utcnow() > doc["expires_at"]:
+        return None
+    return doc["email"]
+
+def consume_reset_token(token: str, new_password: str) -> bool:
+    email = verify_reset_token(token)
+    if not email:
+        return False
+    client = get_mongo_client()
+    client[MONGO_DB][USERS_COLLECTION].update_one(
+        {"email": email},
+        {"$set": {"password": hash_password(new_password)}}
+    )
+    client[MONGO_DB][RESET_COLLECTION].update_one(
+        {"token": token},
+        {"$set": {"used": True}}
+    )
+    return True
+
+def upsert_google_user(google_id: str, email: str, username: str, picture: str = None):
+    client = get_mongo_client()
+    col = client[MONGO_DB][USERS_COLLECTION]
+    existing = col.find_one({"google_id": google_id})
+    if not existing:
+        existing_email = col.find_one({"email": email.lower().strip()})
+        if existing_email:
+            col.update_one(
+                {"email": email.lower().strip()},
+                {"$set": {"google_id": google_id, "picture": picture}}
+            )
+        else:
+            col.insert_one({
+                "email": email.lower().strip(),
+                "username": username,
+                "google_id": google_id,
+                "picture": picture,
+                "created_at": datetime.utcnow(),
+                "auth_method": "google",
+            })
+        return col.find_one({"google_id": google_id})
+    else:
+        col.update_one({"google_id": google_id}, {"$set": {"picture": picture}})
+        return col.find_
