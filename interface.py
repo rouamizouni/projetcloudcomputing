@@ -1,13 +1,15 @@
-from datetime import datetime
-import json
-import random
-import time
-from langchain_mongodb.chat_message_histories import MongoDBChatMessageHistory
-from pymongo import MongoClient
-import requests
+import streamlit as st
 from google.cloud import storage
 from google.oauth2 import service_account
-import streamlit as st
+import time
+import requests
+import random
+import hashlib
+import uuid
+from langchain_mongodb.chat_message_histories import MongoDBChatMessageHistory
+from pymongo import MongoClient
+from datetime import datetime
+import json
 
 st.set_page_config(page_title="SmartStudy Tutor", page_icon="🎓", layout="centered")
 
@@ -18,13 +20,44 @@ PROJECT_ID = "projet-cloud-computing-493007"
 MONGO_URI = "mongodb+srv://projetcloud:projetcloud@geminirag.shbfocl.mongodb.net/?appName=GeminiRAG"
 MONGO_DB = "smartstudy"
 MONGO_COLLECTION = "chat_history"
+USERS_COLLECTION = "users"
 
 API_BASE_URL = "https://smartstudy-api-64317660927.europe-west1.run.app"
 API_ASK_URL = f"{API_BASE_URL}/ask"
 API_QUIZ_URL = f"{API_BASE_URL}/quiz"
 
-# — HELPERS —
+# — AUTH HELPERS —
 
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def get_mongo_client():
+    return MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+
+def get_user(email: str):
+    client = get_mongo_client()
+    return client[MONGO_DB][USERS_COLLECTION].find_one({"email": email.lower().strip()})
+
+def create_user(email: str, username: str, password: str) -> bool:
+    client = get_mongo_client()
+    col = client[MONGO_DB][USERS_COLLECTION]
+    if col.find_one({"email": email.lower().strip()}):
+        return False  # email deja utilise
+    col.insert_one({
+        "email": email.lower().strip(),
+        "username": username.strip(),
+        "password": hash_password(password),
+        "created_at": datetime.utcnow(),
+    })
+    return True
+
+def login_user(email: str, password: str):
+    user = get_user(email)
+    if user and user["password"] == hash_password(password):
+        return user
+    return None
+
+# — APP HELPERS —
 
 def get_storage_client():
     try:
@@ -37,11 +70,6 @@ def get_storage_client():
         pass
     return storage.Client(project=PROJECT_ID)
 
-
-def get_mongo_client():
-    return MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-
-
 def get_chat_history(session_id: str) -> MongoDBChatMessageHistory:
     return MongoDBChatMessageHistory(
         session_id=session_id,
@@ -50,7 +78,6 @@ def get_chat_history(session_id: str) -> MongoDBChatMessageHistory:
         database_name=MONGO_DB,
     )
 
-
 def save_message(session_id: str, role: str, content: str):
     history = get_chat_history(session_id)
     if role == "user":
@@ -58,13 +85,10 @@ def save_message(session_id: str, role: str, content: str):
     else:
         history.add_ai_message(content)
 
-
-def save_quiz_to_history(
-    session_id: str, questions: list, answers: dict, score: int, total: int
-):
+def save_quiz_to_history(session_id: str, questions: list, answers: dict, score: int, total: int):
     pct = round(100 * score / total)
-    user_msg = f"📝 **Quiz effectué** — {len(questions)} questions sur ce document."
-    lines = [f"## 🧠 Résultat du Quiz — {score}/{total} ({pct}%)\n"]
+    user_msg = f"📝 **Quiz effectue** — {len(questions)} questions sur ce document."
+    lines = [f"## 🧠 Resultat du Quiz — {score}/{total} ({pct}%)\n"]
     for i, q in enumerate(questions):
         user_answer = answers.get(i)
         correct = q["correct_index"]
@@ -72,13 +96,9 @@ def save_quiz_to_history(
         icon = "✅" if is_correct else "❌"
         lines.append(f"**{icon} Q{i+1}. {q['question']}**")
         if user_answer is not None:
-            lines.append(
-                f"- Ta réponse : {chr(65 + user_answer)}. {q['options'][user_answer]}"
-            )
+            lines.append(f"- Ta reponse : {chr(65 + user_answer)}. {q['options'][user_answer]}")
         if not is_correct and user_answer is not None:
-            lines.append(
-                f"- Bonne réponse : {chr(65 + correct)}. {q['options'][correct]}"
-            )
+            lines.append(f"- Bonne reponse : {chr(65 + correct)}. {q['options'][correct]}")
         lines.append(f"- 💡 {q['explanation']}\n")
     ai_msg = "\n".join(lines)
     save_message(session_id, "user", user_msg)
@@ -86,9 +106,9 @@ def save_quiz_to_history(
     load_past_sessions.clear()
     load_session_messages.clear()
 
-
 @st.cache_data(ttl=30)
-def load_past_sessions():
+def load_past_sessions(user_id: str):
+    """Charge uniquement les sessions de cet utilisateur."""
     try:
         client = get_mongo_client()
         col = client[MONGO_DB][MONGO_COLLECTION]
@@ -96,29 +116,25 @@ def load_past_sessions():
         if sample is None:
             return []
         session_field = next(
-            (f for f in ["SessionId", "session_id", "sessionId"] if f in sample),
-            None,
+            (f for f in ["SessionId", "session_id", "sessionId"] if f in sample), None
         )
         if not session_field:
             return []
-        sessions = col.aggregate(
-            [
-                {
-                    "$group": {
-                        "_id": f"${session_field}",
-                        "last_updated": {"$max": "$_id"},
-                        "message_count": {"$sum": 1},
-                    }
-                },
-                {"$sort": {"last_updated": -1}},
-                {"$limit": 30},
-            ]
-        )
+        # Les session_id sont prefixes par user_id
+        sessions = col.aggregate([
+            {"$match": {session_field: {"$regex": f"^{user_id}__"}}},
+            {"$group": {
+                "_id": f"${session_field}",
+                "last_updated": {"$max": "$_id"},
+                "message_count": {"$sum": 1},
+            }},
+            {"$sort": {"last_updated": -1}},
+            {"$limit": 30},
+        ])
         return list(sessions)
     except Exception as e:
         st.session_state["mongo_error"] = str(e)
         return []
-
 
 @st.cache_data(ttl=60)
 def load_session_messages(session_id: str):
@@ -129,8 +145,7 @@ def load_session_messages(session_id: str):
         if sample is None:
             return []
         session_field = next(
-            (f for f in ["SessionId", "session_id", "sessionId"] if f in sample),
-            None,
+            (f for f in ["SessionId", "session_id", "sessionId"] if f in sample), None
         )
         if not session_field:
             return []
@@ -145,9 +160,7 @@ def load_session_messages(session_id: str):
                     continue
             msg_type = history_raw.get("type", "")
             data = history_raw.get("data", {})
-            content = (
-                data.get("content", "") if data else history_raw.get("content", "")
-            )
+            content = data.get("content", "") if data else history_raw.get("content", "")
             if not content:
                 continue
             if msg_type == "human":
@@ -156,11 +169,12 @@ def load_session_messages(session_id: str):
                 messages.append({"role": "assistant", "content": content})
         return messages
     except Exception as e:
-        st.session_state["mongo_error"] = str(e)
         return []
 
-
 def format_session_label(session_id: str):
+    """Enleve le prefixe user_id__ et formate la date."""
+    if "**" in session_id:
+        session_id = session_id.split("**", 1)[1]
     parts = session_id.rsplit("_", 1)
     if len(parts) == 2:
         filename = parts[0]
@@ -172,10 +186,24 @@ def format_session_label(session_id: str):
             pass
     return session_id, ""
 
+def make_session_id(user_id: str, filename: str) -> str:
+    return f"{user_id}__{filename}_{int(time.time())}"
+
+def get_filename_from_session(session_id: str) -> str:
+    if "**" in session_id:
+        session_id = session_id.split("**", 1)[1]
+    parts = session_id.rsplit("_", 1)
+    return parts[0] if len(parts) == 2 else session_id
 
 # — STATE INITIALIZATION —
 
-defaults = {
+auth_defaults = {
+    "authenticated": False,
+    "user_id": None,
+    "username": None,
+    "is_guest": False,
+}
+app_defaults = {
     "file_ready": False,
     "messages": [],
     "current_filename": None,
@@ -186,28 +214,102 @@ defaults = {
     "show_quiz": False,
     "mongo_error": None,
 }
-for key, val in defaults.items():
+for key, val in {**auth_defaults, **app_defaults}.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
-# — SIDEBAR —
+# — PAGE AUTH —
+
+def reset_app_state():
+    for key, val in app_defaults.items():
+        st.session_state[key] = val
+
+def show_auth_page():
+    st.title("🎓 SmartStudy Tutor")
+    st.markdown("### Bienvenue dans ton espace d'apprentissage intelligent")
+    st.divider()
+
+    tab_login, tab_signup, tab_guest = st.tabs(["🔑 Connexion", "📝 Inscription", "👤 Mode invite"])
+
+    # --- LOGIN ---
+    with tab_login:
+        st.markdown("#### Connexion")
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Mot de passe", type="password", key="login_password")
+
+        if st.button("Se connecter", type="primary", use_container_width=True, key="btn_login"):
+            if not email or not password:
+                st.error("Remplis tous les champs.")
+            else:
+                user = login_user(email, password)
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.user_id = str(user["_id"])
+                    st.session_state.username = user["username"]
+                    st.session_state.is_guest = False
+                    reset_app_state()
+                    st.rerun()
+                else:
+                    st.error("Email ou mot de passe incorrect.")
+
+    # --- SIGNUP ---
+    with tab_signup:
+        st.markdown("#### Creer un compte")
+        new_username = st.text_input("Prenom / Pseudo", key="signup_username")
+        new_email = st.text_input("Email", key="signup_email")
+        new_password = st.text_input("Mot de passe", type="password", key="signup_password")
+        new_password2 = st.text_input("Confirmer le mot de passe", type="password", key="signup_password2")
+
+        if st.button("Creer mon compte", type="primary", use_container_width=True, key="btn_signup"):
+            if not new_username or not new_email or not new_password:
+                st.error("Remplis tous les champs.")
+            elif new_password != new_password2:
+                st.error("Les mots de passe ne correspondent pas.")
+            elif len(new_password) < 6:
+                st.error("Le mot de passe doit faire au moins 6 caracteres.")
+            else:
+                ok = create_user(new_email, new_username, new_password)
+                if ok:
+                    st.success("Compte cree ! Tu peux maintenant te connecter.")
+                else:
+                    st.error("Cet email est deja utilise.")
+
+    # --- GUEST ---
+    with tab_guest:
+        st.markdown("#### Mode invite")
+        st.info("En mode invite, tes conversations ne seront pas sauvegardees. Elles disparaissent quand tu fermes l'onglet.")
+        if st.button("Continuer en tant qu'invite", use_container_width=True, key="btn_guest"):
+            st.session_state.authenticated = True
+            st.session_state.user_id = f"guest_{uuid.uuid4().hex[:8]}"
+            st.session_state.username = "Invite"
+            st.session_state.is_guest = True
+            reset_app_state()
+            st.rerun()
+
+if not st.session_state.authenticated:
+    show_auth_page()
+    st.stop()
+
+# — APP PRINCIPALE —
 
 with st.sidebar:
     st.title("🎓 SmartStudy")
 
+    if st.session_state.is_guest:
+        st.caption("👤 Mode invite")
+    else:
+        st.caption(f"👋 Bonjour, **{st.session_state.username}**")
+
     mode = st.radio(
         "Mode du tuteur",
         options=["persona", "normal"],
-        format_func=lambda x: (
-            "🎓 Tuteur Personna" if x == "persona" else "📝 Mode Normal"
-        ),
+        format_func=lambda x: "🎓 Tuteur Personna" if x == "persona" else "📝 Mode Normal",
     )
 
     st.divider()
 
     if st.button("✏️ Nouvelle conversation", use_container_width=True):
-        for key in list(defaults.keys()):
-            st.session_state[key] = defaults[key]
+        reset_app_state()
         st.rerun()
 
     if st.session_state.file_ready and not st.session_state.show_quiz:
@@ -218,49 +320,52 @@ with st.sidebar:
             st.session_state.quiz_submitted = False
             st.rerun()
 
-    st.divider()
-    st.markdown("#### 🕐 Conversations récentes")
+    if not st.session_state.is_guest:
+        st.divider()
+        st.markdown("#### 🕐 Conversations recentes")
 
-    if st.session_state.get("mongo_error"):
-        st.error(f"MongoDB : {st.session_state.mongo_error}")
+        if st.session_state.get("mongo_error"):
+            st.error(f"MongoDB : {st.session_state.mongo_error}")
 
-    past_sessions = load_past_sessions()
+        past_sessions = load_past_sessions(st.session_state.user_id)
 
-    if not past_sessions:
-        st.caption("Aucune conversation sauvegardee.")
+        if not past_sessions:
+            st.caption("Aucune conversation sauvegardee.")
+        else:
+            for s in past_sessions:
+                sid = s["_id"]
+                if not sid:
+                    continue
+                filename, date = format_session_label(sid)
+                is_active = sid == st.session_state.session_id
+                prefix = "▶ " if is_active else ""
+                label = f"{prefix}📄 {filename}\n🕐 {date}" if date else f"{prefix}📄 {filename}"
+
+                if st.button(label, key=f"sess_{sid}", use_container_width=True):
+                    msgs = load_session_messages(sid)
+                    st.session_state.messages = msgs
+                    st.session_state.session_id = sid
+                    st.session_state.current_filename = get_filename_from_session(sid)
+                    st.session_state.file_ready = True
+                    st.session_state.show_quiz = False
+                    st.session_state.quiz_data = None
+                    st.session_state.quiz_answers = {}
+                    st.session_state.quiz_submitted = False
+                    st.rerun()
     else:
-        for s in past_sessions:
-            sid = s["_id"]
-            if not sid:
-                continue
-            filename, date = format_session_label(sid)
-            is_active = sid == st.session_state.session_id
-            prefix = "▶ " if is_active else ""
-            label = (
-                f"{prefix}📄 {filename}\n🕐 {date}"
-                if date
-                else f"{prefix}📄 {filename}"
-            )
+        st.divider()
+        st.caption("💡 Connecte-toi pour sauvegarder tes conversations.")
 
-            if st.button(label, key=f"sess_{sid}", use_container_width=True):
-                msgs = load_session_messages(sid)
-                parts = sid.rsplit("_", 1)
-                st.session_state.messages = msgs
-                st.session_state.session_id = sid
-                st.session_state.current_filename = (
-                    parts[0] if len(parts) == 2 else sid
-                )
-                st.session_state.file_ready = True
-                st.session_state.show_quiz = False
-                st.session_state.quiz_data = None
-                st.session_state.quiz_answers = {}
-                st.session_state.quiz_submitted = False
-                st.rerun()
+    st.divider()
+    if st.button("🚪 Se deconnecter", use_container_width=True):
+        for key in list({**auth_defaults, **app_defaults}.keys()):
+            st.session_state[key] = {**auth_defaults, **app_defaults}[key]
+        st.rerun()
 
-# — MAIN —
+# — MAIN CONTENT —
 
 st.title("🎓 SmartStudy Tutor")
-st.markdown("### Bienvenue dans ton espace d’apprentissage intelligent")
+st.markdown("### Bienvenue dans ton espace d'apprentissage intelligent")
 
 # — SECTION 1 : UPLOAD —
 
@@ -272,9 +377,7 @@ if not st.session_state.file_ready:
 
         if uploaded_file is not None:
             if st.button("Lancer l'analyse du cours"):
-                with st.status(
-                    "Traitement du document...", expanded=True
-                ) as status:
+                with st.status("Traitement du document...", expanded=True) as status:
                     st.write("📤 Envoi du fichier vers Google Cloud Storage...")
                     client = get_storage_client()
                     bucket = client.bucket(BUCKET_NAME)
@@ -288,18 +391,15 @@ if not st.session_state.file_ready:
                     time.sleep(45)
 
                     st.write("✅ Document indexe !")
-                    status.update(
-                        label="Analyse terminee !",
-                        state="complete",
-                        expanded=False,
-                    )
+                    status.update(label="Analyse terminee !", state="complete", expanded=False)
 
-                st.session_state.session_id = (
-                    f"{uploaded_file.name}_{int(time.time())}"
+                st.session_state.session_id = make_session_id(
+                    st.session_state.user_id, uploaded_file.name
                 )
                 st.session_state.file_ready = True
                 st.session_state.messages = []
-                load_past_sessions.clear()
+                if not st.session_state.is_guest:
+                    load_past_sessions.clear()
                 st.balloons()
                 st.rerun()
 
@@ -324,12 +424,14 @@ if st.session_state.file_ready and st.session_state.show_quiz:
     if st.session_state.quiz_data is None:
         with st.spinner("🎓 Le mentor prepare ton quiz..."):
             try:
+                # FIXED: Force dynamic parameters to stop backend/network level caching
                 res = requests.post(
                     API_QUIZ_URL,
                     json={
                         "question": "",
                         "filename": st.session_state.current_filename,
                         "seed": random.randint(1, 999999),
+                        "timestamp": int(time.time())  
                     },
                     timeout=120,
                 )
@@ -340,9 +442,7 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                         st.session_state.quiz_data = quiz_obj["questions"]
                         st.rerun()
                     else:
-                        st.error(
-                            "Le quiz n'a pas pu etre genere correctement."
-                        )
+                        st.error("Le quiz n'a pas pu etre genere correctement.")
                         st.json(data)
                 else:
                     st.error(f"Erreur {res.status_code} : {res.text}")
@@ -353,9 +453,7 @@ if st.session_state.file_ready and st.session_state.show_quiz:
         questions = st.session_state.quiz_data
 
         if not st.session_state.quiz_submitted:
-            st.info(
-                f"📋 **{len(questions)} questions** — Choisis une reponse pour chacune, puis soumets."
-            )
+            st.info(f"📋 **{len(questions)} questions** — Choisis une reponse pour chacune, puis soumets.")
 
             for i, q in enumerate(questions):
                 with st.container(border=True):
@@ -363,9 +461,7 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                     choice = st.radio(
                         "Ta reponse :",
                         options=list(range(len(q["options"]))),
-                        format_func=lambda x, opts=q[
-                            "options"
-                        ]: f"{chr(65+x)}. {opts[x]}",
+                        format_func=lambda x, opts=q["options"]: f"{chr(65+x)}. {opts[x]}",
                         key=f"quiz_q_{i}",
                         index=None,
                     )
@@ -373,24 +469,17 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                         st.session_state.quiz_answers[i] = choice
 
             all_answered = len(st.session_state.quiz_answers) == len(questions)
-            if st.button(
-                "Soumettre mes reponses",
-                disabled=not all_answered,
-                use_container_width=True,
-                type="primary",
-            ):
+            if st.button("Soumettre mes reponses", disabled=not all_answered,
+                        use_container_width=True, type="primary"):
                 st.session_state.quiz_submitted = True
                 st.rerun()
 
             if not all_answered:
-                st.caption(
-                    f"Reponses donnees : {len(st.session_state.quiz_answers)}/{len(questions)}"
-                )
+                st.caption(f"Reponses donnees : {len(st.session_state.quiz_answers)}/{len(questions)}")
 
         else:
             score = sum(
-                1
-                for i, q in enumerate(questions)
+                1 for i, q in enumerate(questions)
                 if st.session_state.quiz_answers.get(i) == q["correct_index"]
             )
             total = len(questions)
@@ -398,9 +487,7 @@ if st.session_state.file_ready and st.session_state.show_quiz:
 
             if pct >= 80:
                 st.success(f"🏆 Excellent ! Score : **{score}/{total}** ({pct}%)")
-                feedback = (
-                    "Tu maitrises bien ce chapitre. Continue comme ca !"
-                )
+                feedback = "Tu maitrises bien ce chapitre. Continue comme ca !"
             elif pct >= 50:
                 st.warning(f"👍 Pas mal ! Score : **{score}/{total}** ({pct}%)")
                 feedback = "Quelques notions a revoir. Regarde bien les explications ci-dessous."
@@ -425,13 +512,9 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                     for j, opt in enumerate(q["options"]):
                         prefix = chr(65 + j)
                         if j == correct:
-                            st.markdown(
-                                f"- **{prefix}. {opt}**  _(bonne reponse)_"
-                            )
+                            st.markdown(f"- **{prefix}. {opt}**  _(bonne reponse)_")
                         elif j == user_answer and not is_correct:
-                            st.markdown(
-                                f"- {prefix}. {opt}  _(ta reponse)_"
-                            )
+                            st.markdown(f"- {prefix}. {opt}  _(ta reponse)_")
                         else:
                             st.markdown(f"- {prefix}. {opt}")
 
@@ -439,10 +522,7 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                     if q.get("source"):
                         st.caption(f"Source : {q['source']}")
 
-            if (
-                st.session_state.session_id
-                and "quiz_saved" not in st.session_state
-            ):
+            if not st.session_state.is_guest and st.session_state.session_id and "quiz_saved" not in st.session_state:
                 try:
                     save_quiz_to_history(
                         st.session_state.session_id,
@@ -452,18 +532,15 @@ if st.session_state.file_ready and st.session_state.show_quiz:
                         total,
                     )
                     st.session_state.quiz_saved = True
-                    st.toast(
-                        "✅ Quiz sauvegarde dans ton historique !", icon="💾"
-                    )
+                    st.toast("✅ Quiz sauvegarde dans ton historique !", icon="💾")
                 except Exception as e:
                     st.warning(f"Quiz non sauvegarde : {e}")
 
             st.divider()
             col1, col2 = st.columns(2)
             with col1:
-                if st.button(
-                    "🔄 Refaire un nouveau quiz", use_container_width=True
-                ):
+                # FIXED: Cleaned states and applied explicit rerun to completely cycle the page
+                if st.button("🔄 Refaire un nouveau quiz", use_container_width=True):
                     st.session_state.quiz_data = None
                     st.session_state.quiz_answers = {}
                     st.session_state.quiz_submitted = False
@@ -480,16 +557,14 @@ if st.session_state.file_ready and st.session_state.show_quiz:
 # — SECTION 2B : CHAT —
 
 elif st.session_state.file_ready:
-    st.success(
-        f"**Document actif :** `{st.session_state.current_filename}`"
-    )
+    st.success(f"**Document actif :** `{st.session_state.current_filename}`")
+    if st.session_state.is_guest:
+        st.warning("👤 Mode invite — cette conversation ne sera pas sauvegardee.")
     st.divider()
 
     mode_label = "🎓 Mentor" if mode == "persona" else "📝 Direct"
     st.subheader(f"Pose tes questions — Mode {mode_label}")
-    st.caption(
-        "Astuce : utilise le bouton **🧠 Lancer un quiz** dans la sidebar pour te tester."
-    )
+    st.caption("Astuce : utilise le bouton **🧠 Lancer un quiz** dans la sidebar pour te tester.")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -518,16 +593,10 @@ elif st.session_state.file_ready:
                         st.session_state.messages.append(
                             {"role": "assistant", "content": reponse_ia}
                         )
-                        if st.session_state.session_id:
+                        if not st.session_state.is_guest and st.session_state.session_id:
                             try:
-                                save_message(
-                                    st.session_state.session_id, "user", prompt
-                                )
-                                save_message(
-                                    st.session_state.session_id,
-                                    "assistant",
-                                    reponse_ia,
-                                )
+                                save_message(st.session_state.session_id, "user", prompt)
+                                save_message(st.session_state.session_id, "assistant", reponse_ia)
                                 load_past_sessions.clear()
                                 load_session_messages.clear()
                             except Exception as e:
